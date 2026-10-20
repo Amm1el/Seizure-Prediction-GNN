@@ -1,7 +1,6 @@
-#Computer won't allow me to test (conda / library issues)#
-
 # Import required libraries
 import pickle
+import numpy as np
 import networkx as nx
 import torch
 from torch_geometric.data import Data
@@ -17,7 +16,15 @@ path_to_test_seizure_files = "path_to_data/file_markers_classification/testSet_s
 # Load adjacency matrix
 print("Loading adjacency matrix...")
 with open(path_to_adjacency_matrix, "rb") as f:
-    adj_matrix = pickle.load(f)
+    adj_obj = pickle.load(f)
+
+# The EEG-GNN-SSL electrode graph pickle stores [sensor_ids, sensor_id_to_index, adj_mx];
+# accept either that list or a bare matrix.
+if isinstance(adj_obj, (list, tuple)):
+    sensor_ids, sensor_id_to_index, adj_matrix = adj_obj
+else:
+    sensor_ids, adj_matrix = None, adj_obj
+adj_matrix = np.asarray(adj_matrix)
 
 print(f"Adjacency Matrix Shape: {adj_matrix.shape}")
 
@@ -29,7 +36,8 @@ print(distances.head())
 
 # Create a NetworkX graph from the adjacency matrix
 print("\nCreating NetworkX graph...")
-G = nx.from_numpy_matrix(adj_matrix)
+G = nx.from_numpy_array(adj_matrix)  # from_numpy_matrix was removed in NetworkX 3.0
+G.remove_edges_from(nx.selfloop_edges(G))  # the diagonal is each electrode with itself
 
 # Print basic graph info
 print(f"Number of nodes: {G.number_of_nodes()}")
@@ -39,7 +47,9 @@ display_graph(G, title="EEG Graph")
 
 # Create a PyTorch Geometric graph
 print("\nCreating PyTorch Geometric graph...")
-edge_index = torch.tensor(list(G.edges)).t().contiguous()
+# PyTorch Geometric expects both directions of each undirected edge.
+edge_index = torch.tensor(list(G.edges), dtype=torch.long).t().contiguous()
+edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
 
 # Generate dummy node features (replace with actual features if available)
 node_features = torch.rand((adj_matrix.shape[0], 10))  # Example: 10-dimensional features
