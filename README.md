@@ -24,28 +24,50 @@ The approach was developed through a literature review of existing GNN models, m
 - Ablation studies across several candidate architectures suggest the combined model classifies seizure states better than either part alone.
 - Results are preliminary. Planned next steps were hyperparameter optimization, cross-validation and statistical testing on larger datasets.
 
-## What is in this repository
+## Code
 
-This repository holds the starting data pipeline, not the full model:
+> **Honesty note.** This code is a 2026 reimplementation of the pipeline described in the poster; the original experiment code isn't public. The synthetic-data ablation is a smoke test of the pipeline, not a reproduction of the poster's results. No result in this repository comes from real EEG yet.
 
-- `Main.py` loads the electrode graph (adjacency matrix and electrode distances), builds it with NetworkX, converts it into a PyTorch Geometric `Data` object with both directions of every edge, and loads the train and test seizure file markers. Node features are placeholders here.
-- `graph_utils.py` draws the electrode graph with Matplotlib.
-- `docs/` holds the UROP poster.
+The `seizure_gnn` package rebuilds each step of the poster's method:
 
-The electrode graph and file markers follow the layout of the [EEG-GNN-SSL](https://github.com/tsy935/eeg-gnn-ssl) dataset preparation.
+| Poster step | Module | What it does |
+|---|---|---|
+| Remove artifacts and noise | `seizure_gnn/preprocess.py` | 0.5-40 Hz Butterworth band-pass (`filtfilt`), optional 50/60 Hz notch, per-channel z-score |
+| Segment into fixed time windows | `seizure_gnn/preprocess.py` | Overlapping windows (default 2 s, 1 s stride) and per-window seizure labels |
+| Functional brain network per window | `seizure_gnn/connectivity.py` | Nodes = channels; edges = 0.5 · \|Pearson\| + 0.5 · histogram mutual information, top-k sparsified; node features = log delta/theta/alpha/beta power (Welch), mean, std, line length; output is a PyTorch Geometric `Data` |
+| Sequence of graphs over time | `seizure_gnn/data.py` | Sliding sequences of T window graphs, labeled by the *next* window (prediction framing; `horizon=0` gives detection). Includes a `SyntheticEEG` generator and optional EDF/NumPy loaders |
+| DGI self-supervised node embeddings | `seizure_gnn/models.py` | `GCNEncoder` trained with `torch_geometric.nn.DeepGraphInfomax` (feature-shuffling corruption, one summary per window graph) |
+| GNN-based temporal model | `seizure_gnn/models.py` | Per-window graph embedding (mean-pooled GCN output) fed to a causal, dilated Temporal Convolutional Network (TCN) |
+| Fuse spatial + temporal features | `seizure_gnn/models.py` | `FusionClassifier`: [final-window graph embedding ; TCN output] -> MLP -> seizure logit |
+| Ablation vs single models | `seizure_gnn/models.py`, `seizure_gnn/ablation.py` | `SpatialOnly` (GCN on the last window), `TemporalOnly` (TCN on handcrafted features, no graph), and fusion without DGI pretraining |
+| Training and evaluation | `seizure_gnn/train.py` | DGI pretraining, then supervised training with class-weighted BCE; accuracy, F1, ROC AUC; train/val/test split by recording so near-identical overlapping windows from one recording never sit on both sides of the split |
+
+The original 2025 starter script is still at the root: `Main.py` loads the EEG-GNN-SSL electrode graph (adjacency matrix and electrode distances), builds it with NetworkX, converts it into a PyTorch Geometric `Data` object and loads the train/test seizure file markers; `graph_utils.py` draws the graph. The electrode graph and file markers follow the layout of the [EEG-GNN-SSL](https://github.com/tsy935/eeg-gnn-ssl) dataset preparation. Update the `path_to_data/...` paths at the top of `Main.py` before running it.
+
+`docs/` holds the UROP poster.
+
+### Run
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA build
+pip install -r requirements.txt
+
+pytest -q                          # 19 tests, a few seconds on CPU
+python scripts/run_ablation.py     # synthetic ablation, about 1.5 minutes on CPU
+```
+
+The ablation writes [`results/ablation_synthetic.md`](results/ablation_synthetic.md). Every model scores near the ceiling there because the synthetic seizures are easy to spot, so that table checks that the pipeline works; it says nothing about which model is better on real EEG.
+
+### Next steps: running on real EEG
+
+1. **Get data.** [CHB-MIT Scalp EEG](https://physionet.org/content/chbmit/1.0.0/) is open on PhysioNet. The [TUH EEG Seizure Corpus (TUSZ)](https://isip.piconepress.com/projects/nedc/html/tuh_eeg/) is larger but requires signing a data use agreement.
+2. **Load it.** `seizure_gnn.data.load_edf_recording` reads EDF files with MNE (`pip install mne`). Parse each dataset's seizure annotations into `(start_sec, end_sec)` intervals and pick one fixed channel list so every graph has the same nodes. Use the patient id as `recording_id` so splits are patient-wise.
+3. **Pick the task.** For true prediction, label sequences by a pre-ictal horizon of minutes rather than the next window, and handle the much stronger class imbalance.
+4. **Evaluate properly.** Leave-one-patient-out cross-validation, a validation-tuned decision threshold, and statistical tests across folds, as the poster's planned next steps describe.
 
 ## Tech stack
 
-Python, PyTorch, PyTorch Geometric, NetworkX, NumPy, pandas, Matplotlib
-
-## Run
-
-```bash
-pip install torch torch_geometric networkx numpy pandas matplotlib
-python Main.py
-```
-
-Update the `path_to_data/...` paths at the top of `Main.py` to point to your copy of the dataset.
+Python, PyTorch, PyTorch Geometric, NumPy, SciPy, scikit-learn, NetworkX, pandas, Matplotlib, pytest
 
 ## References
 
